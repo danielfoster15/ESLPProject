@@ -15,6 +15,15 @@ from keras.layers import Dropout
 from keras.layers.merge import add
 from keras.callbacks import ModelCheckpoint
 from nltk.tokenize import TweetTokenizer
+from gensim import utils
+from gensim.models.doc2vec import LabeledSentence
+from gensim.models.doc2vec import TaggedDocument
+from gensim.models import Doc2Vec
+
+
+doc2vec_model = Doc2Vec.load('doc2vecmodel.h5')
+
+
 tweettokenizer = TweetTokenizer()
 
 # load doc into memory
@@ -69,7 +78,7 @@ def load_clean_descriptions(filename, dataset):
 	return descriptions
 
 # load photo features
-def load_tweet_only(txtfile):
+def load_tweet_only(txtfile, dataset):
 	# load all features
 	tweet_vocab_lookup = {}
 	id = 0
@@ -85,23 +94,55 @@ def load_tweet_only(txtfile):
 				tweetonly= ''
 			else:
 				print('no!')
-			if tweetonly == '':
+			if tweetonly == '' or tweetonly == '\n' or tweetonly.isspace():
 				tokens = [' ']
 			else:
 				tokens = tweettokenizer.tokenize(tweetonly)
-			print(tokens,uid,sid)
 			tweettokens.append((tokens, uid, sid))
 			for word in tokens:
 				if word not in tweet_vocab_lookup:
 					tweet_vocab_lookup[word] = id
 					id += 1
+			if tokens == [' ']:
+				print('empty id thing:      ', tweet_vocab_lookup[' '])
 	for tweet, uid, sid in tweettokens:
-		tweetvec = [tweet_vocab_lookup[word] for word in tweet]
+		tweetvec = doc2vec_model.infer_vector(tweet).reshape((1,150))
 		identifier = 'uid='+str(uid)+'_sid='+str(sid)
+		if identifier in dataset:
 		#print(identifier)
-		tweetvecs[identifier] = tweetvec
+			tweetvecs[identifier] = tweetvec
 	# filter features
 	return tweetvecs
+
+def doc_to_vec(txtfile, dataset):
+	labeled_tweets = []
+	tweettokens = []
+	with open(txtfile, 'r') as f:
+		for line in f:
+			splitline = line.split('\t')
+			if len(splitline) == 4:
+				uid, sid, hashtweet, tweetonly = splitline
+			elif len(splitline)==3:
+				uid, sid, hashtweet = splitline
+				tweetonly= ''
+			else:
+				print('no!')
+			if tweetonly == '' or tweetonly == '\n' or tweetonly.isspace():
+				tokens = [' ']
+			else:
+				tokens = tweettokenizer.tokenize(tweetonly)
+			tweettokens.append((tokens, uid, sid))
+	for tweet, uid, sid in tweettokens:
+		identifier = 'uid='+str(uid)+'_sid='+str(sid)
+		if identifier in dataset:
+			labeled_tweets.append(TaggedDocument(tweet, identifier))
+	model = Doc2Vec(dm=1, min_count=1, window=10, size=150, sample=1e-4, negative=10)
+	model.build_vocab(labeled_tweets)
+	for epoch in range(20):
+		model.train(labeled_tweets, epochs=model.iter, total_examples=model.corpus_count)
+		print("Epoch #{} is complete.".format(epoch + 1))
+	# filter features
+
 
 # covert a dictionary of clean descriptions to a list of descriptions
 def to_lines(descriptions):
@@ -141,6 +182,7 @@ def create_sequences(tokenizer, max_length, descriptions, photos):
 				# encode output sequence
 				out_seq = to_categorical([out_seq], num_classes=vocab_size)[0]
 				# store
+				print('tweet vector:           ', photos[key].shape)
 				X1.append(photos[key][0])
 				X2.append(in_seq)
 				y.append(out_seq)
@@ -149,7 +191,7 @@ def create_sequences(tokenizer, max_length, descriptions, photos):
 # define the captioning model
 def define_model(vocab_size, max_length):
 	# feature extractor model
-	inputs1 = Input(shape=(1,))
+	inputs1 = Input(shape=(150,))
 	fe1 = Dropout(0.5)(inputs1)
 	fe2 = Dense(256, activation='relu')(fe1)
 	# sequence model
@@ -174,14 +216,14 @@ def define_model(vocab_size, max_length):
 # load training dataset (6K)
 filename = 'freqtags2.txt'
 fullset=load_set(filename)
-train = fullset[:8285]
+train = fullset[:9000]
 print('Dataset: %d' % len(train))
 # descriptions
 train_descriptions = load_clean_descriptions('freqtags2.txt', train)
 print('Descriptions: train=%d' % len(train_descriptions))
 # photo features
-train_features = load_tweet_only('descriptions_with_freqtags_train.txt')
-print('Photos: train=%d' % len(train_features))
+train_features = load_tweet_only('descriptions_with_freqtags.txt', train)
+#print('Photos: train=%d' % len(train_features))
 # prepare tokenizer
 tokenizer = create_tokenizer(train_descriptions)
 vocab_size = len(tokenizer.word_index) + 1
@@ -196,13 +238,13 @@ X1train, X2train, ytrain = create_sequences(tokenizer, max_length, train_descrip
 
 # load test set
 filename = 'freqtags2.txt'
-test= fullset[8285:]
+test= fullset[9357:]
 print('Dataset: %d' % len(test))
 # descriptions
 test_descriptions = load_clean_descriptions('freqtags2.txt', test)
 print('Descriptions: test=%d' % len(test_descriptions))
 # photo features
-test_features = load_tweet_only('descriptions_with_freqtags_test.txt')
+test_features = load_tweet_only('descriptions_with_freqtags.txt', test)
 print('Photos: test=%d' % len(test_features))
 # prepare sequences
 X1test, X2test, ytest = create_sequences(tokenizer, max_length, test_descriptions, test_features)
